@@ -1,34 +1,23 @@
-import express from 'express';
-import { Connection, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
-import { User } from '../models/models.js';
+import { Router } from 'express';
+import { Connection, PublicKey } from '@solana/web3.js';
+import { Transaction } from '../models/models.js';
 
-const router = express.Router();
-const connection = new Connection(process.env.SOLANA_RPC_URL);
+const router = Router();
 
-// Create new wallet
-router.post('/create', async (req, res) => {
+// Submit transaction
+router.post('/submit', async (req, res) => {
     try {
-        const { username, walletAddress } = req.body;
-        
-        // Check if wallet already exists
-        const existingUser = await User.findOne({ walletAddress });
-        if (existingUser) {
-            return res.status(400).json({
-                success: false,
-                error: 'Wallet already registered'
-            });
-        }
-        
-        const user = new User({
-            username,
-            walletAddress
+        const { sender, recipient, amount, signature } = req.body;
+        const transaction = new Transaction({
+            sender,
+            recipient,
+            amount,
+            signature
         });
-        
-        await user.save();
-        
+        await transaction.save();
         res.status(201).json({
             success: true,
-            data: user
+            data: transaction
         });
     } catch (error) {
         res.status(500).json({
@@ -38,16 +27,20 @@ router.post('/create', async (req, res) => {
     }
 });
 
-// Get wallet balance
-router.get('/balance/:walletAddress', async (req, res) => {
+// Get transaction history for a wallet
+router.get('/history/:walletAddress', async (req, res) => {
     try {
         const { walletAddress } = req.params;
-        const pubKey = new PublicKey(walletAddress);
-        const balance = await connection.getBalance(pubKey);
+        const transactions = await Transaction.find({
+            $or: [
+                { sender: walletAddress },
+                { recipient: walletAddress }
+            ]
+        }).sort({ timestamp: -1 });
         
         res.json({
             success: true,
-            balance: balance / LAMPORTS_PER_SOL
+            data: transactions
         });
     } catch (error) {
         res.status(500).json({
@@ -57,24 +50,31 @@ router.get('/balance/:walletAddress', async (req, res) => {
     }
 });
 
-// Get wallet info
-router.get('/:walletAddress', async (req, res) => {
+// Get transaction status
+router.get('/status/:signature', async (req, res) => {
     try {
-        const { walletAddress } = req.params;
-        const user = await User.findOne({ walletAddress })
-            .populate('transactions')
-            .select('-__v');
+        if (!process.env.SOLANA_RPC_URL) {
+            throw new Error('Solana RPC URL not configured');
+        }
+        const connection = new Connection(process.env.SOLANA_RPC_URL);
+        const { signature } = req.params;
+        const transaction = await Transaction.findOne({ signature });
         
-        if (!user) {
+        if (!transaction) {
             return res.status(404).json({
                 success: false,
-                error: 'Wallet not found'
+                error: 'Transaction not found'
             });
         }
         
+        const status = await connection.getSignatureStatus(signature);
+        
         res.json({
             success: true,
-            data: user
+            data: {
+                dbStatus: transaction.status,
+                networkStatus: status
+            }
         });
     } catch (error) {
         res.status(500).json({
